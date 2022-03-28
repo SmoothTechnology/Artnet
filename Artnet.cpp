@@ -35,6 +35,15 @@ void Artnet::begin(byte mac[], byte ip[])
   Udp.begin(ART_NET_PORT);
 }
 
+void Artnet::begin(byte mac[])
+{
+#if !defined(ARDUINO_SAMD_ZERO) && !defined(ESP8266) && !defined(ESP32)
+  Ethernet.begin(mac);
+#endif
+
+  Udp.begin(ART_NET_PORT);
+}
+
 void Artnet::begin()
 {
   Udp.begin(ART_NET_PORT);
@@ -95,9 +104,9 @@ uint16_t Artnet::read()
       {
         //fill the reply struct, and then send it to the network's broadcast address
         Serial.print("POLL from ");
-        Serial.print(remoteIP);
-        Serial.print(" broadcast addr: ");
-        Serial.println(broadcast);
+        Serial.println(remoteIP);
+        // Serial.print(" broadcast addr: ");  // original commented out - this shouldn't actually broadcast!! Now unicasts per spec
+        // Serial.println(broadcast);
 
         #if !defined(ARDUINO_SAMD_ZERO) && !defined(ESP8266) && !defined(ESP32)
           IPAddress local_ip = Ethernet.localIP();
@@ -120,10 +129,10 @@ uint16_t Artnet::read()
         memset(ArtPollReply.goodoutput,  0x80, 4);
         memset(ArtPollReply.porttypes,  0xc0, 4);
 
-        uint8_t shortname [18];
-        uint8_t longname [64];
-        sprintf((char *)shortname, "artnet arduino");
-        sprintf((char *)longname, "Art-Net -> Arduino Bridge");
+        // uint8_t shortname [18];
+        // uint8_t longname [64];
+        // sprintf((char *)shortname, myShortname);
+        // sprintf((char *)longname, "Art-Net -> Arduino Bridge");
         memcpy(ArtPollReply.shortname, shortname, sizeof(shortname));
         memcpy(ArtPollReply.longname, longname, sizeof(longname));
 
@@ -159,7 +168,7 @@ uint16_t Artnet::read()
             ArtPollReply.swin[i] = swin[i];
         }
         sprintf((char *)ArtPollReply.nodereport, "%i DMX output universes active.", ArtPollReply.numbports);
-        Udp.beginPacket(broadcast, ART_NET_PORT);//send the packet to the broadcast address
+        Udp.beginPacket(remoteIP, ART_NET_PORT);//send the packet to the broadcast address
         Udp.write((uint8_t *)&ArtPollReply, sizeof(ArtPollReply));
         Udp.endPacket();
 
@@ -199,4 +208,71 @@ void Artnet::printPacketContent()
     Serial.print("  ");
   }
   Serial.println('\n');
+}
+
+void Artnet::teensyMAC(uint8_t *mac)
+{
+
+  static char teensyMac[23];
+
+#ifdef HW_OCOTP_MAC1 //&& HW_OCOTP_MAC0
+  // debug("using HW_OCOTP_MAC* - see https://forum.pjrc.com/threads/57595-Serial-amp-MAC-Address-Teensy-4-0");
+  for (uint8_t by = 0; by < 2; by++)
+    mac[by] = (HW_OCOTP_MAC1 >> ((1 - by) * 8)) & 0xFF;
+  for (uint8_t by = 0; by < 4; by++)
+    mac[by + 2] = (HW_OCOTP_MAC0 >> ((3 - by) * 8)) & 0xFF;
+
+#define MAC_OK
+
+#else
+
+  mac[0] = 0x04;
+  mac[1] = 0xE9;
+  mac[2] = 0xE5;
+
+  uint32_t SN = 0;
+  __disable_irq();
+
+#if defined(HAS_KINETIS_FLASH_FTFA) || defined(HAS_KINETIS_FLASH_FTFL)
+  // debug("using FTFL_FSTAT_FTFA - vis teensyID.h - see https://github.com/sstaub/TeensyID/blob/master/TeensyID.h");
+
+  FTFL_FSTAT = FTFL_FSTAT_RDCOLERR | FTFL_FSTAT_ACCERR | FTFL_FSTAT_FPVIOL;
+  FTFL_FCCOB0 = 0x41;
+  FTFL_FCCOB1 = 15;
+  FTFL_FSTAT = FTFL_FSTAT_CCIF;
+  while (!(FTFL_FSTAT & FTFL_FSTAT_CCIF))
+    ; // wait
+  SN = *(uint32_t *)&FTFL_FCCOB7;
+
+#define MAC_OK
+
+#elif defined(HAS_KINETIS_FLASH_FTFE)
+  // debug("using FTFL_FSTAT_FTFE - vis teensyID.h - see https://github.com/sstaub/TeensyID/blob/master/TeensyID.h");
+
+  kinetis_hsrun_disable();
+  FTFL_FSTAT = FTFL_FSTAT_RDCOLERR | FTFL_FSTAT_ACCERR | FTFL_FSTAT_FPVIOL;
+  *(uint32_t *)&FTFL_FCCOB3 = 0x41070000;
+  FTFL_FSTAT = FTFL_FSTAT_CCIF;
+  while (!(FTFL_FSTAT & FTFL_FSTAT_CCIF))
+    ; // wait
+  SN = *(uint32_t *)&FTFL_FCCOBB;
+  kinetis_hsrun_enable();
+
+#define MAC_OK
+
+#endif
+
+  __enable_irq();
+
+  for (uint8_t by = 0; by < 3; by++)
+    mac[by + 3] = (SN >> ((2 - by) * 8)) & 0xFF;
+
+#endif
+
+#ifdef MAC_OK
+  sprintf(teensyMac, "MAC: %02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  Serial.println(teensyMac);
+#else
+  Serial.println("ERROR: TeensyMAC could not get MAC!!");
+#endif
 }
